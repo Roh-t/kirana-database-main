@@ -9,8 +9,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
-    "cloudinary": "^2.11.0"
+    "cloudinary": "^2.11.0",
+    "express": "^5.2.1"
   }
 }
