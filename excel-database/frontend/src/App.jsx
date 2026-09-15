@@ -231,8 +231,18 @@ export default function App() {
   };
 
   const autoLoadCatalog = async () => {
-    setIsLoadingCatalog(true);
     setCatalogLoadError('');
+
+    // Show the browser cache immediately on repeat visits. The server refresh
+    // below still keeps the cache current, but it no longer blocks the UI.
+    const saved = await loadFromDB('master_catalog_pool');
+    const hasCachedCatalog = saved && Array.isArray(saved) && saved.length > 0;
+    if (hasCachedCatalog) {
+      setMasterCatalog(saved);
+      setIsLoadingCatalog(false);
+    } else {
+      setIsLoadingCatalog(true);
+    }
 
     // The backend seeds MongoDB from catalog.xlsx, so use it as the source of truth.
     try {
@@ -251,10 +261,8 @@ export default function App() {
       console.warn('Catalog API unavailable; trying local catalog sources.', err);
     }
 
-    // Fall back to the local browser cache when the API is unavailable.
-    const saved = await loadFromDB('master_catalog_pool');
-    if (saved && Array.isArray(saved) && saved.length > 0) {
-      setMasterCatalog(saved);
+    // Keep showing the cached catalog when the refresh is unavailable.
+    if (hasCachedCatalog) {
       setIsLoadingCatalog(false);
       return;
     }
