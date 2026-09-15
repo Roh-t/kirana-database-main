@@ -54,6 +54,7 @@ const productSchema = new mongoose.Schema(
 );
 
 const MasterProduct = mongoose.model('MasterProduct', productSchema);
+let databaseReady = Promise.resolve(false);
 
 // Helper to extract values case-insensitively
 const getVal = (row, possibleKeys) => {
@@ -89,8 +90,7 @@ async function autoSeedPermanentFile() {
     let filePath = possiblePaths.find((p) => fs.existsSync(p));
 
     if (!filePath) {
-      console.log('ℹ️ No catalog.xlsx file found in backend folder to auto-seed.');
-      return;
+      throw new Error('catalog.xlsx was not found in the backend folder.');
     }
 
     console.log(`⏳ Found permanent file: ${filePath}`);
@@ -100,7 +100,9 @@ async function autoSeedPermanentFile() {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rawData = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
-    if (rawData.length === 0) return;
+    if (rawData.length === 0) {
+      throw new Error('catalog.xlsx does not contain any rows.');
+    }
 
     const normalized = rawData.map((row) => ({
       Image: getVal(row, ['Image', 'imageUrl', 'image', 'img']),
@@ -127,6 +129,7 @@ async function autoSeedPermanentFile() {
     console.log(`🎉 SUCCESS: Auto-seeded ${totalCount.toLocaleString()} items permanently into MongoDB!`);
   } catch (err) {
     console.error('Auto-seed error:', err);
+    throw err;
   }
 }
 
@@ -166,7 +169,15 @@ app.get('/api/master/count', async (req, res) => {
 // Return the catalog seeded from catalog.xlsx for the frontend search index.
 app.get('/api/master/catalog', async (req, res) => {
   try {
+    if (!(await databaseReady)) {
+      return res.status(503).json({ error: 'Catalog database is not ready yet. Please retry shortly.' });
+    }
+
     const catalog = await MasterProduct.find().select('-__v').lean();
+    if (catalog.length === 0) {
+      return res.status(503).json({ error: 'Catalog database is empty.' });
+    }
+
     res.json(catalog);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -251,12 +262,16 @@ app.listen(PORT, '0.0.0.0', () => {
 if (!process.env.MONGODB_URI) {
   console.error('⚠️ WARNING: MONGODB_URI is missing!');
 } else {
-  mongoose
+  databaseReady = mongoose
     .connect(process.env.MONGODB_URI)
     .then(async () => {
       console.log('✅ Connected to MongoDB Atlas');
       // Automatically load permanent file into MongoDB if empty
       await autoSeedPermanentFile();
+      return true;
     })
-    .catch((err) => console.error('❌ MongoDB Connection Failed:', err.message));
+    .catch((err) => {
+      console.error('❌ MongoDB initialization failed:', err.message);
+      return false;
+    });
 }
