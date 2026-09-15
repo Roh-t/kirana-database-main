@@ -34,7 +34,11 @@ const CLOUDINARY_CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'mq6
 const CLOUDINARY_API_KEY = import.meta.env.VITE_CLOUDINARY_API_KEY || '';
 const CLOUDINARY_API_SECRET = import.meta.env.VITE_CLOUDINARY_API_SECRET || '';
 const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || '';
-const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/$/, '');
+// Keep the deployed app connected even when the static-host build does not
+// receive VITE_API_URL. Local development can still override this value.
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL || 'https://kirana-database-main.onrender.com'
+).replace(/\/$/, '');
 
 // SHA-1 Signature Generator
 async function generateSHA1Signature(message) {
