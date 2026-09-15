@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   FileSpreadsheet, 
@@ -34,6 +34,7 @@ const CLOUDINARY_CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'mq6
 const CLOUDINARY_API_KEY = import.meta.env.VITE_CLOUDINARY_API_KEY || '';
 const CLOUDINARY_API_SECRET = import.meta.env.VITE_CLOUDINARY_API_SECRET || '';
 const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || '';
+const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/$/, '');
 
 // SHA-1 Signature Generator
 async function generateSHA1Signature(message) {
@@ -57,6 +58,33 @@ const COLUMNS = [
   'Indian Category',
   'Indian Sub-Category'
 ];
+
+function normalizeCatalogRows(rawData) {
+  const getVal = (row, possibleKeys) => {
+    const rowKeys = Object.keys(row);
+    for (const pKey of possibleKeys) {
+      const matched = rowKeys.find(k => k.trim().toLowerCase() === pKey.toLowerCase());
+      if (matched !== undefined && row[matched] !== undefined) {
+        return String(row[matched]).trim();
+      }
+    }
+    return '';
+  };
+
+  return rawData.map((row) => ({
+    'Image': getVal(row, ['Image', 'imageUrl', 'image', 'img']),
+    'Name': getVal(row, ['Name', 'name', 'productName', 'Title']),
+    'Price': getVal(row, ['Price', 'lingPr', 'sellingPrice', 'price', 'sp']),
+    'Original Price': getVal(row, ['Original Price', 'OriginalPrice', 'mrp', 'MRP']),
+    'Quantity': getVal(row, ['Quantity', 'quantity', 'qty', 'weight', 'size']),
+    'Sub-Category': getVal(row, ['Sub-Category', 'SubCategory', 'subcategory']),
+    'Category': getVal(row, ['Category', 'category']),
+    'Hindi Name': getVal(row, ['Hindi Name', 'HindiName', 'Hindi', 'regionalName']),
+    'Hinglish Name': getVal(row, ['Hinglish Name', 'HinglishName', 'Hinglish']),
+    'Indian Category': getVal(row, ['Indian Category', 'IndianCategory']),
+    'Indian Sub-Category': getVal(row, ['Indian Sub-Category', 'IndianSubCategory'])
+  }));
+}
 
 // IndexedDB Helper for high-capacity 33,000+ dataset storage
 const DB_NAME = 'CatalogStoreDB';
@@ -199,17 +227,35 @@ export default function App() {
   };
 
   const autoLoadCatalog = async () => {
-    // 1. Check local IndexedDB first
-    let saved = await loadFromDB('master_catalog_pool');
-    if (saved && Array.isArray(saved) && saved.length > 0) {
-      setMasterCatalog(saved);
-      return;
-    }
-
     setIsLoadingCatalog(true);
     setCatalogLoadError('');
 
-    // 2. Try loading common names from public folder
+    // The backend seeds MongoDB from catalog.xlsx, so use it as the source of truth.
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/master/catalog`);
+      if (response.ok) {
+        const serverData = await response.json();
+        if (Array.isArray(serverData) && serverData.length > 0) {
+          const normalized = normalizeCatalogRows(serverData);
+          setMasterCatalog(normalized);
+          await saveToDB('master_catalog_pool', normalized);
+          setIsLoadingCatalog(false);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Catalog API unavailable; trying local catalog sources.', err);
+    }
+
+    // Fall back to the local browser cache when the API is unavailable.
+    const saved = await loadFromDB('master_catalog_pool');
+    if (saved && Array.isArray(saved) && saved.length > 0) {
+      setMasterCatalog(saved);
+      setIsLoadingCatalog(false);
+      return;
+    }
+
+    // Finally try loading common names from the frontend public folder.
     const possibleFiles = ['/catalog.xlsx', '/Catalog.xlsx', '/data.xlsx', '/products.xlsx', '/catalog.csv'];
     let rawData = null;
 
@@ -223,41 +269,13 @@ export default function App() {
     }
 
     if (rawData && rawData.length > 0) {
-      const getVal = (row, possibleKeys) => {
-        const rowKeys = Object.keys(row);
-        for (const pKey of possibleKeys) {
-          const matched = rowKeys.find(k => k.trim().toLowerCase() === pKey.toLowerCase());
-          if (matched !== undefined && row[matched] !== undefined) {
-            return String(row[matched]).trim();
-          }
-        }
-        return '';
-      };
-
-      const normalized = rawData.map((row) => {
-        const hindi = getVal(row, ['Hindi Name', 'HindiName', 'Hindi', 'regionalName']);
-        const hinglish = getVal(row, ['Hinglish Name', 'HinglishName', 'Hinglish']);
-
-        return {
-          'Image': getVal(row, ['Image', 'imageUrl', 'image', 'img']),
-          'Name': getVal(row, ['Name', 'name', 'productName', 'Title']),
-          'Price': getVal(row, ['Price', 'lingPr', 'sellingPrice', 'price', 'sp']),
-          'Original Price': getVal(row, ['Original Price', 'OriginalPrice', 'mrp', 'MRP']),
-          'Quantity': getVal(row, ['Quantity', 'quantity', 'qty', 'weight', 'size']),
-          'Sub-Category': getVal(row, ['Sub-Category', 'SubCategory', 'subcategory']),
-          'Category': getVal(row, ['Category', 'category']),
-          'Hindi Name': hindi,
-          'Hinglish Name': hinglish,
-          'Indian Category': getVal(row, ['Indian Category', 'IndianCategory']),
-          'Indian Sub-Category': getVal(row, ['Indian Sub-Category', 'IndianSubCategory'])
-        };
-      });
+      const normalized = normalizeCatalogRows(rawData);
 
       setMasterCatalog(normalized);
       saveToDB('master_catalog_pool', normalized);
       setCatalogLoadError('');
     } else {
-      setCatalogLoadError('catalog.xlsx not found in public folder. Click "Import Dataset" to upload it once.');
+      setCatalogLoadError('Could not load the catalog from the backend. Check that the API is running and MongoDB is connected.');
     }
 
     setIsLoadingCatalog(false);

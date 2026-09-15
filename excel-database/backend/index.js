@@ -163,6 +163,16 @@ app.get('/api/master/count', async (req, res) => {
   }
 });
 
+// Return the catalog seeded from catalog.xlsx for the frontend search index.
+app.get('/api/master/catalog', async (req, res) => {
+  try {
+    const catalog = await MasterProduct.find().select('-__v').lean();
+    res.json(catalog);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/master/search', async (req, res) => {
   try {
     const q = req.query.q ? req.query.q.trim() : '';
