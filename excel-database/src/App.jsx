@@ -22,7 +22,9 @@ import {
   ExternalLink,
   UploadCloud,
   Loader2,
-  Maximize2
+  Maximize2,
+  ArrowLeft,
+  RefreshCw
 } from 'lucide-react';
 
 // ==========================================
@@ -33,7 +35,7 @@ const CLOUDINARY_API_KEY = import.meta.env.VITE_CLOUDINARY_API_KEY || '';
 const CLOUDINARY_API_SECRET = import.meta.env.VITE_CLOUDINARY_API_SECRET || '';
 const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || '';
 
-// SHA-1 Signature Generator (using browser-native Web Crypto API)
+// SHA-1 Signature Generator
 async function generateSHA1Signature(message) {
   const msgBuffer = new TextEncoder().encode(message);
   const hashBuffer = await crypto.subtle.digest('SHA-1', msgBuffer);
@@ -104,10 +106,7 @@ async function loadFromDB(key) {
   }
 }
 
-// ========================================================
-// 🔤 HINGLISH TO HINDI TRANSLITERATION ENGINE
-// Converts English phonetics (e.g. "kapoor", "atta") to Devanagari
-// ========================================================
+// Hinglish to Hindi Transliteration Helper
 async function convertHinglishToHindi(text) {
   if (!text || !text.trim()) return '';
   try {
@@ -125,6 +124,31 @@ async function convertHinglishToHindi(text) {
 }
 
 export default function App() {
+  // ------------------------------------
+  // CHECK FOR INDIVIDUAL PRODUCT TAB URL
+  // ------------------------------------
+  const [individualProduct, setIndividualProduct] = useState(() => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const isProductView = urlParams.get('product');
+      if (isProductView) {
+        const saved = sessionStorage.getItem('individual_view_item');
+        return saved ? JSON.parse(saved) : null;
+      }
+    } catch {}
+    return null;
+  });
+
+  const handleOpenIndividualTab = (item) => {
+    try {
+      sessionStorage.setItem('individual_view_item', JSON.stringify(item));
+      const url = `${window.location.origin}${window.location.pathname}?product=${encodeURIComponent(item['Name'])}`;
+      window.open(url, '_blank');
+    } catch {
+      window.open(item['Image'] || '#', '_blank');
+    }
+  };
+
   // ------------------------------------
   // AUTH
   // ------------------------------------
@@ -144,6 +168,7 @@ export default function App() {
   // ------------------------------------
   const [masterCatalog, setMasterCatalog] = useState([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
+  const [catalogLoadError, setCatalogLoadError] = useState('');
 
   const [myExcelData, setMyExcelData] = useState(() => {
     try {
@@ -161,79 +186,91 @@ export default function App() {
   }, [myExcelData]);
 
   // ========================================================
-  // 🚀 AUTO-LOAD CATALOG FROM PUBLIC/CATALOG.XLSX OR DB
+  // 🚀 ROBUST AUTO-LOAD FOR DEPLOYED SERVERS
   // ========================================================
-  useEffect(() => {
-    async function initCatalog() {
-      // 1. Check if already cached in browser DB
-      let saved = await loadFromDB('master_catalog_pool') || await loadFromDB('excel_database_table');
-      if (saved && Array.isArray(saved) && saved.length > 0) {
-        setMasterCatalog(saved);
-        return;
-      }
+  const fetchAndLoadFile = async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const arrayBuffer = await response.arrayBuffer();
+    const wb = XLSX.read(arrayBuffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rawData = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    return rawData;
+  };
 
-      // 2. If not in DB, automatically fetch /catalog.xlsx from public folder
+  const autoLoadCatalog = async () => {
+    // 1. Check local IndexedDB first
+    let saved = await loadFromDB('master_catalog_pool');
+    if (saved && Array.isArray(saved) && saved.length > 0) {
+      setMasterCatalog(saved);
+      return;
+    }
+
+    setIsLoadingCatalog(true);
+    setCatalogLoadError('');
+
+    // 2. Try loading common names from public folder
+    const possibleFiles = ['/catalog.xlsx', '/Catalog.xlsx', '/data.xlsx', '/products.xlsx', '/catalog.csv'];
+    let rawData = null;
+
+    for (const filePath of possibleFiles) {
       try {
-        setIsLoadingCatalog(true);
-        const response = await fetch('/catalog.xlsx');
-        if (!response.ok) {
-          setIsLoadingCatalog(false);
-          return;
-        }
-
-        const arrayBuffer = await response.arrayBuffer();
-        const wb = XLSX.read(arrayBuffer, { type: 'array' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rawData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
-        if (rawData.length > 0) {
-          const getVal = (row, possibleKeys) => {
-            const rowKeys = Object.keys(row);
-            for (const pKey of possibleKeys) {
-              const matched = rowKeys.find(
-                k => k.trim().toLowerCase() === pKey.toLowerCase()
-              );
-              if (matched !== undefined && row[matched] !== undefined) {
-                return String(row[matched]).trim();
-              }
-            }
-            return '';
-          };
-
-          const normalized = rawData.map((row) => {
-            const hindi = getVal(row, ['Hindi Name', 'HindiName', 'Hindi', 'regionalName']);
-            const hinglish = getVal(row, ['Hinglish Name', 'HinglishName', 'Hinglish']);
-
-            return {
-              'Image': getVal(row, ['Image', 'imageUrl', 'image', 'img']),
-              'Name': getVal(row, ['Name', 'name', 'productName', 'Title']),
-              'Price': getVal(row, ['Price', 'lingPr', 'sellingPrice', 'price', 'sp']),
-              'Original Price': getVal(row, ['Original Price', 'OriginalPrice', 'mrp', 'MRP']),
-              'Quantity': getVal(row, ['Quantity', 'quantity', 'qty', 'weight', 'size']),
-              'Sub-Category': getVal(row, ['Sub-Category', 'SubCategory', 'subcategory']),
-              'Category': getVal(row, ['Category', 'category']),
-              'Hindi Name': hindi,
-              'Hinglish Name': hinglish,
-              'Indian Category': getVal(row, ['Indian Category', 'IndianCategory']),
-              'Indian Sub-Category': getVal(row, ['Indian Sub-Category', 'IndianSubCategory'])
-            };
-          });
-
-          updateCatalog(normalized);
-        }
-      } catch (error) {
-        console.warn("Auto-load catalog error:", error);
-      } finally {
-        setIsLoadingCatalog(false);
+        rawData = await fetchAndLoadFile(filePath);
+        if (rawData && rawData.length > 0) break;
+      } catch (err) {
+        // try next file
       }
     }
 
-    initCatalog();
+    if (rawData && rawData.length > 0) {
+      const getVal = (row, possibleKeys) => {
+        const rowKeys = Object.keys(row);
+        for (const pKey of possibleKeys) {
+          const matched = rowKeys.find(k => k.trim().toLowerCase() === pKey.toLowerCase());
+          if (matched !== undefined && row[matched] !== undefined) {
+            return String(row[matched]).trim();
+          }
+        }
+        return '';
+      };
+
+      const normalized = rawData.map((row) => {
+        const hindi = getVal(row, ['Hindi Name', 'HindiName', 'Hindi', 'regionalName']);
+        const hinglish = getVal(row, ['Hinglish Name', 'HinglishName', 'Hinglish']);
+
+        return {
+          'Image': getVal(row, ['Image', 'imageUrl', 'image', 'img']),
+          'Name': getVal(row, ['Name', 'name', 'productName', 'Title']),
+          'Price': getVal(row, ['Price', 'lingPr', 'sellingPrice', 'price', 'sp']),
+          'Original Price': getVal(row, ['Original Price', 'OriginalPrice', 'mrp', 'MRP']),
+          'Quantity': getVal(row, ['Quantity', 'quantity', 'qty', 'weight', 'size']),
+          'Sub-Category': getVal(row, ['Sub-Category', 'SubCategory', 'subcategory']),
+          'Category': getVal(row, ['Category', 'category']),
+          'Hindi Name': hindi,
+          'Hinglish Name': hinglish,
+          'Indian Category': getVal(row, ['Indian Category', 'IndianCategory']),
+          'Indian Sub-Category': getVal(row, ['Indian Sub-Category', 'IndianSubCategory'])
+        };
+      });
+
+      setMasterCatalog(normalized);
+      saveToDB('master_catalog_pool', normalized);
+      setCatalogLoadError('');
+    } else {
+      setCatalogLoadError('catalog.xlsx not found in public folder. Click "Import Dataset" to upload it once.');
+    }
+
+    setIsLoadingCatalog(false);
+  };
+
+  useEffect(() => {
+    autoLoadCatalog();
   }, []);
 
   const updateCatalog = (newData) => {
     setMasterCatalog(newData);
     saveToDB('master_catalog_pool', newData);
+    setCatalogLoadError('');
   };
 
   // Search & Pagination States
@@ -259,25 +296,16 @@ export default function App() {
     'Indian Sub-Category': ''
   });
 
-  // 👁️ VIEW DETAILS MODAL
-  const [viewItem, setViewItem] = useState(null);
-  const [isViewModalOpen, setIsViewModalOpen] = useState(false);
-
-  // 🔍 FULLSCREEN IMAGE PREVIEW LIGHTBOX
   const [fullscreenImage, setFullscreenImage] = useState(null);
-
-  // ☁️ CLOUDINARY UPLOAD STATE
   const [isUploadingToCloudinary, setIsUploadingToCloudinary] = useState(false);
 
-  // ==========================================
-  // ☁️ SECURE CLOUDINARY UPLOAD HANDLER (.ENV)
-  // ==========================================
+  // Cloudinary Upload
   const handleCloudinaryUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     if (!CLOUDINARY_CLOUD_NAME) {
-      alert('Missing VITE_CLOUDINARY_CLOUD_NAME in your .env file!');
+      alert('Missing VITE_CLOUDINARY_CLOUD_NAME in .env file!');
       return;
     }
 
@@ -286,7 +314,6 @@ export default function App() {
       const uploadData = new FormData();
       uploadData.append('file', file);
 
-      // Method 1: Signed Upload using API_KEY and API_SECRET from .env
       if (CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
         const timestamp = Math.round(new Date().getTime() / 1000);
         const stringToSign = `timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
@@ -295,15 +322,11 @@ export default function App() {
         uploadData.append('api_key', CLOUDINARY_API_KEY);
         uploadData.append('timestamp', timestamp);
         uploadData.append('signature', signature);
-      } 
-      // Method 2: Fallback to Upload Preset if API_SECRET is not provided
-      else if (CLOUDINARY_UPLOAD_PRESET) {
+      } else if (CLOUDINARY_UPLOAD_PRESET) {
         uploadData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-        if (CLOUDINARY_API_KEY) {
-          uploadData.append('api_key', CLOUDINARY_API_KEY);
-        }
+        if (CLOUDINARY_API_KEY) uploadData.append('api_key', CLOUDINARY_API_KEY);
       } else {
-        alert('Please provide either (VITE_CLOUDINARY_API_KEY & VITE_CLOUDINARY_API_SECRET) or VITE_CLOUDINARY_UPLOAD_PRESET in your .env file!');
+        alert('Set VITE_CLOUDINARY_API_KEY & SECRET or VITE_CLOUDINARY_UPLOAD_PRESET in .env!');
         setIsUploadingToCloudinary(false);
         return;
       }
@@ -316,22 +339,20 @@ export default function App() {
       const data = await res.json();
       if (data.secure_url) {
         setFormData(prev => ({ ...prev, 'Image': data.secure_url }));
-        alert('Image uploaded to Cloudinary successfully!');
+        alert('Image uploaded successfully!');
       } else {
-        alert('Cloudinary Upload Failed: ' + (data.error?.message || 'Check your .env settings.'));
+        alert('Upload Failed: ' + (data.error?.message || 'Check .env settings.'));
       }
     } catch (err) {
       console.error(err);
-      alert('Error uploading to Cloudinary. Check internet or .env credentials.');
+      alert('Error uploading to Cloudinary.');
     } finally {
       setIsUploadingToCloudinary(false);
       e.target.value = null;
     }
   };
 
-  // ------------------------------------
-  // AUTH METHODS
-  // ------------------------------------
+  // Auth Methods
   const handleLogin = (e) => {
     e.preventDefault();
     if (!/^\d{10}$/.test(mobileNumber)) {
@@ -356,9 +377,7 @@ export default function App() {
     } catch {}
   };
 
-  // ------------------------------------
-  // MANUAL EXCEL IMPORT (OPTIONAL)
-  // ------------------------------------
+  // Manual Excel Import (Permanent to IndexedDB)
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -375,9 +394,7 @@ export default function App() {
           const getVal = (row, possibleKeys) => {
             const rowKeys = Object.keys(row);
             for (const pKey of possibleKeys) {
-              const matched = rowKeys.find(
-                k => k.trim().toLowerCase() === pKey.toLowerCase()
-              );
+              const matched = rowKeys.find(k => k.trim().toLowerCase() === pKey.toLowerCase());
               if (matched !== undefined && row[matched] !== undefined) {
                 return String(row[matched]).trim();
               }
@@ -405,7 +422,7 @@ export default function App() {
           });
 
           updateCatalog(normalized);
-          alert(`Successfully imported ${normalized.length} items to suggestion catalog!`);
+          alert(`Successfully loaded ${normalized.length} items permanently into this browser!`);
         }
       } catch (err) {
         console.error(err);
@@ -416,9 +433,7 @@ export default function App() {
     e.target.value = null;
   };
 
-  // ------------------------------------
-  // SEARCH SUGGESTIONS ACROSS 33,000 ITEMS
-  // ------------------------------------
+  // Search across 33,000 items
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
 
@@ -451,9 +466,7 @@ export default function App() {
     setMyExcelData(prev => [product, ...prev]);
   };
 
-  // ------------------------------------
-  // EXPORT ONLY CURATED EXCEL
-  // ------------------------------------
+  // Export
   const handleDownloadExcel = () => {
     if (myExcelData.length === 0) {
       alert('Your Excel list is empty! Search and add products first.');
@@ -466,9 +479,7 @@ export default function App() {
     XLSX.writeFile(wb, `My_Excel_Database_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  // ------------------------------------
-  // CRUD ACTIONS
-  // ------------------------------------
+  // CRUD
   const openEditModal = (row, index) => {
     setEditIndex(index);
     setFormData({ ...row });
@@ -485,17 +496,12 @@ export default function App() {
 
   const handleSaveModal = async (e) => {
     e.preventDefault();
-    
-    // Auto-generate Hindi Name if left empty and Hinglish exists
     let finalHindi = formData['Hindi Name'];
     if (!finalHindi && formData['Hinglish Name']) {
       finalHindi = await convertHinglishToHindi(formData['Hinglish Name']);
     }
 
-    const finalData = {
-      ...formData,
-      'Hindi Name': finalHindi || ''
-    };
+    const finalData = { ...formData, 'Hindi Name': finalHindi || '' };
 
     if (editIndex !== null) {
       const updated = [...myExcelData];
@@ -520,7 +526,152 @@ export default function App() {
   }, [myExcelData, currentPage]);
 
   // ========================================================
-  // ⚪ LOGIN SCREEN (WHITE THEME)
+  // 🌟 INDIVIDUAL PRODUCT VIEW (NEW TAB)
+  // ========================================================
+  if (individualProduct) {
+    const added = isItemAdded(individualProduct['Name']);
+
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-4 sm:p-8 flex flex-col items-center">
+        <div className="max-w-4xl w-full bg-white border border-slate-200 rounded-3xl p-6 sm:p-10 shadow-xl space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+            <button
+              onClick={() => {
+                if (window.opener) {
+                  window.close();
+                } else {
+                  window.location.href = window.location.pathname;
+                }
+              }}
+              className="flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3.5 py-2 rounded-xl transition cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back / Close Tab</span>
+            </button>
+
+            <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold px-3 py-1 rounded-full">
+              Individual Product View
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+            <div 
+              className="relative bg-slate-50 border border-slate-200 rounded-3xl p-6 flex items-center justify-center cursor-pointer group overflow-hidden"
+              onClick={() => individualProduct['Image'] && setFullscreenImage(individualProduct['Image'])}
+              title="Click for Fullscreen Zoom"
+            >
+              {individualProduct['Image'] ? (
+                <img
+                  src={individualProduct['Image']}
+                  alt=""
+                  className="w-full max-h-80 object-contain rounded-2xl group-hover:scale-105 transition duration-300"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              ) : (
+                <div className="w-48 h-48 flex items-center justify-center text-slate-300">
+                  <ImageIcon className="w-16 h-16" />
+                </div>
+              )}
+              <div className="absolute bottom-3 right-3 bg-black/60 text-white text-[11px] px-2.5 py-1 rounded-lg flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition">
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Tap to Zoom</span>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <h1 className="text-xl sm:text-2xl font-bold text-slate-900 leading-tight">
+                  {individualProduct['Name']}
+                </h1>
+                <p className="text-sm font-semibold text-emerald-600 mt-1">
+                  {individualProduct['Hindi Name'] || '-'}
+                </p>
+                <p className="text-xs font-medium text-blue-600 mt-0.5">
+                  {individualProduct['Hinglish Name'] || '-'}
+                </p>
+              </div>
+
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-slate-400 block font-semibold uppercase">Selling Price</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-bold text-emerald-600">₹{individualProduct['Price']}</span>
+                    {individualProduct['Original Price'] && (
+                      <span className="text-sm text-slate-400 line-through">₹{individualProduct['Original Price']}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-right">
+                  <span className="text-xs text-slate-400 block font-semibold uppercase">Quantity</span>
+                  <span className="text-sm font-bold text-slate-800">{individualProduct['Quantity'] || 'N/A'}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase block">Category</span>
+                  <span className="font-semibold text-slate-800">{individualProduct['Category'] || '-'}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase block">Sub-Category</span>
+                  <span className="font-semibold text-slate-800">{individualProduct['Sub-Category'] || '-'}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase block">Indian Category</span>
+                  <span className="font-semibold text-slate-800">{individualProduct['Indian Category'] || '-'}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase block">Indian Sub-Category</span>
+                  <span className="font-semibold text-slate-800">{individualProduct['Indian Sub-Category'] || '-'}</span>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                {added ? (
+                  <div className="w-full py-3 bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold rounded-2xl flex items-center justify-center gap-2 shadow-xs text-sm">
+                    <Check className="w-5 h-5" />
+                    <span>Already in My Excel Database</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => handleAddToMyExcel(individualProduct)}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 text-sm transition active:scale-98 cursor-pointer"
+                  >
+                    <Plus className="w-5 h-5" />
+                    <span>+ Add to My Excel Database</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {fullscreenImage && (
+          <div 
+            className="fixed inset-0 z-60 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer"
+            onClick={() => setFullscreenImage(null)}
+          >
+            <button
+              onClick={() => setFullscreenImage(null)}
+              className="absolute top-4 right-4 p-2 bg-slate-800 text-white rounded-full hover:bg-slate-700 transition"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <img
+              src={fullscreenImage}
+              alt=""
+              className="max-w-full max-h-[90vh] object-contain rounded-2xl shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ========================================================
+  // ⚪ LOGIN SCREEN
   // ========================================================
   if (!isAuthenticated) {
     return (
@@ -571,7 +722,7 @@ export default function App() {
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:bg-white transition"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-11 pr-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:bg-white transition"
                   required
                 />
               </div>
@@ -590,7 +741,7 @@ export default function App() {
   }
 
   // ========================================================
-  // ⚪ MAIN WORKSPACE (WHITE THEME)
+  // ⚪ MAIN WORKSPACE
   // ========================================================
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans pb-24 md:pb-8">
@@ -603,13 +754,25 @@ export default function App() {
             </div>
             <div>
               <h1 className="font-bold text-sm sm:text-base text-slate-800 leading-none">Excel Database Studio</h1>
-              <p className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">
+              <p className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
                 {isLoadingCatalog ? (
-                  <span className="text-blue-600 font-medium animate-pulse">
-                    ⏳ Auto-loading 33,000+ catalog...
+                  <span className="text-blue-600 font-medium animate-pulse flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Auto-loading 33,000+ catalog...
                   </span>
                 ) : (
-                  <>Catalog: <strong className="text-emerald-600">{masterCatalog.length.toLocaleString()} items ready</strong></>
+                  <>
+                    Catalog: <strong className="text-emerald-600">{masterCatalog.length.toLocaleString()} items</strong>
+                    {masterCatalog.length === 0 && (
+                      <button
+                        onClick={autoLoadCatalog}
+                        className="ml-2 text-blue-600 underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        <span>Retry Load</span>
+                      </button>
+                    )}
+                  </>
                 )}
               </p>
             </div>
@@ -635,6 +798,24 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 space-y-4 sm:space-y-6">
         
+        {/* Notice banner if 0 items are loaded */}
+        {masterCatalog.length === 0 && !isLoadingCatalog && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-xs">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Suggestion catalog is currently 0:</strong> Click "Import Dataset" to upload your 33,000 items once, or verify <code>public/catalog.xlsx</code> on GitHub.
+              </span>
+            </div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shrink-0 cursor-pointer"
+            >
+              Upload Dataset Now
+            </button>
+          </div>
+        )}
+
         {/* Search & Actions Bar */}
         <div className="flex flex-col lg:flex-row gap-3 justify-between items-stretch lg:items-center bg-white border border-slate-200 rounded-2xl p-3 sm:p-4 shadow-sm">
           <div className="relative flex-1">
@@ -691,9 +872,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* ======================================================== */}
-        {/* 🌟 SEARCH RESULTS FROM SUGGESTION DATASET                */}
-        {/* ======================================================== */}
+        {/* Search Results */}
         {searchQuery.trim().length > 0 && (
           <div className="bg-white border border-emerald-200 rounded-2xl p-3 sm:p-4 space-y-3 shadow-md">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
@@ -704,7 +883,7 @@ export default function App() {
                 </h3>
               </div>
               <span className="text-[11px] text-slate-500 hidden sm:inline">
-                Click 👁️ to zoom/inspect or <strong>"+ Add"</strong> to select
+                Click 👁️ to open in <strong>New Tab</strong> or <strong>"+ Add"</strong> to select
               </span>
             </div>
 
@@ -721,8 +900,8 @@ export default function App() {
                       <div className="flex items-start gap-2.5">
                         <div 
                           className="relative cursor-pointer group shrink-0" 
-                          onClick={() => item['Image'] && setFullscreenImage(item['Image'])}
-                          title="Click to Zoom Image"
+                          onClick={() => handleOpenIndividualTab(item)}
+                          title="Open in New Tab"
                         >
                           {item['Image'] ? (
                             <img
@@ -736,11 +915,15 @@ export default function App() {
                               <ImageIcon className="w-5 h-5" />
                             </div>
                           )}
-                          <Maximize2 className="w-3 h-3 text-white absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 bg-black/60 rounded p-0.5 transition" />
+                          <ExternalLink className="w-3 h-3 text-white absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 bg-black/60 rounded p-0.5 transition" />
                         </div>
 
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs font-semibold text-slate-800 line-clamp-1" title={item['Name']}>
+                          <p 
+                            className="text-xs font-semibold text-slate-800 line-clamp-1 hover:text-emerald-600 cursor-pointer" 
+                            onClick={() => handleOpenIndividualTab(item)}
+                            title="Open in New Tab"
+                          >
                             {item['Name']}
                           </p>
                           <p className="text-[11px] text-emerald-600 font-medium line-clamp-1">
@@ -763,12 +946,9 @@ export default function App() {
 
                         <div className="flex items-center gap-1.5">
                           <button
-                            onClick={() => {
-                              setViewItem(item);
-                              setIsViewModalOpen(true);
-                            }}
-                            className="p-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 rounded-lg transition cursor-pointer"
-                            title="View all details"
+                            onClick={() => handleOpenIndividualTab(item)}
+                            className="p-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 rounded-lg transition cursor-pointer flex items-center gap-1"
+                            title="Open product details in a new tab"
                           >
                             <Eye className="w-3.5 h-3.5" />
                           </button>
@@ -795,15 +975,15 @@ export default function App() {
               </div>
             ) : (
               <div className="py-6 text-center text-slate-400 text-xs">
-                No matching product found.
+                {masterCatalog.length === 0 
+                  ? 'Catalog is empty. Please upload dataset or place catalog.xlsx in public folder.' 
+                  : `No products match "${searchQuery}".`}
               </div>
             )}
           </div>
         )}
 
-        {/* ======================================================== */}
-        {/* 🌟 FINAL EXCEL DATABASE (WHITE TABLE + CARDS)            */}
-        {/* ======================================================== */}
+        {/* Database Table */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
@@ -827,7 +1007,7 @@ export default function App() {
             )}
           </div>
 
-          {/* MOBILE CARDS VIEW */}
+          {/* Mobile View */}
           <div className="block md:hidden space-y-2">
             {paginatedData.length > 0 ? (
               paginatedData.map((row, rIdx) => {
@@ -837,7 +1017,7 @@ export default function App() {
                     <div className="flex items-start gap-3">
                       <div 
                         className="cursor-pointer relative group shrink-0"
-                        onClick={() => row['Image'] && setFullscreenImage(row['Image'])}
+                        onClick={() => handleOpenIndividualTab(row)}
                       >
                         {row['Image'] ? (
                           <img
@@ -851,11 +1031,16 @@ export default function App() {
                             <ImageIcon className="w-5 h-5" />
                           </div>
                         )}
-                        <Maximize2 className="w-3 h-3 text-white absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 bg-black/60 rounded p-0.5" />
+                        <ExternalLink className="w-3 h-3 text-white absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 bg-black/60 rounded p-0.5" />
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <h4 className="text-xs font-semibold text-slate-800 line-clamp-1">{row['Name']}</h4>
+                        <h4 
+                          className="text-xs font-semibold text-slate-800 line-clamp-1 hover:text-emerald-600 cursor-pointer"
+                          onClick={() => handleOpenIndividualTab(row)}
+                        >
+                          {row['Name']}
+                        </h4>
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="text-[11px] text-emerald-600 font-medium line-clamp-1">{row['Hindi Name'] || '-'}</span>
                           <span className="text-slate-300">•</span>
@@ -875,11 +1060,9 @@ export default function App() {
                       <span className="text-[10px] text-slate-400">#{originalIndex + 1} • {row['Sub-Category'] || 'Item'}</span>
                       <div className="flex items-center gap-1.5">
                         <button
-                          onClick={() => {
-                            setViewItem(row);
-                            setIsViewModalOpen(true);
-                          }}
+                          onClick={() => handleOpenIndividualTab(row)}
                           className="p-1.5 bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200"
+                          title="Open in New Tab"
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
@@ -907,7 +1090,7 @@ export default function App() {
             )}
           </div>
 
-          {/* DESKTOP TABLE VIEW */}
+          {/* Desktop Table View */}
           <div className="hidden md:block bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-700">
@@ -941,8 +1124,8 @@ export default function App() {
                           <td className="py-3 px-3 whitespace-nowrap">
                             <div 
                               className="cursor-pointer relative group inline-block"
-                              onClick={() => row['Image'] && setFullscreenImage(row['Image'])}
-                              title="Click to Zoom"
+                              onClick={() => handleOpenIndividualTab(row)}
+                              title="Open in New Tab"
                             >
                               {row['Image'] ? (
                                 <img
@@ -956,11 +1139,15 @@ export default function App() {
                                   <ImageIcon className="w-4 h-4" />
                                 </div>
                               )}
-                              <Maximize2 className="w-2.5 h-2.5 text-white absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 bg-black/60 rounded p-0.5" />
+                              <ExternalLink className="w-2.5 h-2.5 text-white absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 bg-black/60 rounded p-0.5" />
                             </div>
                           </td>
 
-                          <td className="py-3 px-3 font-medium text-slate-800 whitespace-nowrap max-w-xs truncate" title={row['Name']}>
+                          <td 
+                            className="py-3 px-3 font-medium text-slate-800 whitespace-nowrap max-w-xs truncate hover:text-emerald-600 cursor-pointer" 
+                            onClick={() => handleOpenIndividualTab(row)}
+                            title="Open in New Tab"
+                          >
                             {row['Name']}
                           </td>
                           <td className="py-3 px-3 font-bold text-emerald-600 whitespace-nowrap">₹{row['Price']}</td>
@@ -976,12 +1163,9 @@ export default function App() {
                           <td className="py-3 px-3 text-right pr-4 whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
                               <button
-                                onClick={() => {
-                                  setViewItem(row);
-                                  setIsViewModalOpen(true);
-                                }}
-                                className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-800 rounded-lg transition cursor-pointer"
-                                title="View Details"
+                                onClick={() => handleOpenIndividualTab(row)}
+                                className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-emerald-600 rounded-lg transition cursor-pointer"
+                                title="Open in Individual New Tab"
                               >
                                 <Eye className="w-3.5 h-3.5" />
                               </button>
@@ -1048,7 +1232,7 @@ export default function App() {
         </div>
       </main>
 
-      {/* Floating Bottom Download Bar on Mobile */}
+      {/* Floating Bottom Bar on Mobile */}
       <div className="sm:hidden fixed bottom-3 left-3 right-3 bg-white/95 border border-slate-200 backdrop-blur-md rounded-2xl p-3 shadow-xl flex items-center justify-between z-40">
         <div>
           <p className="text-[10px] text-slate-500">My Excel List:</p>
@@ -1063,132 +1247,7 @@ export default function App() {
         </button>
       </div>
 
-      {/* ======================================================== */}
-      {/* 👁️ MODAL: EYE VIEW DETAILS (WHITE THEME)                  */}
-      {/* ======================================================== */}
-      {isViewModalOpen && viewItem && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
-          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl animate-fade-in">
-            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Eye className="w-4 h-4 text-emerald-600" />
-                <h3 className="font-bold text-slate-800 text-sm sm:text-base">Product Details</h3>
-              </div>
-              <button onClick={() => setIsViewModalOpen(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer p-1">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4 sm:p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-              <div className="flex items-start gap-3.5 pb-4 border-b border-slate-100">
-                <div
-                  onClick={() => viewItem['Image'] && setFullscreenImage(viewItem['Image'])}
-                  className="relative cursor-pointer group shrink-0"
-                  title="Click to Zoom Fullscreen"
-                >
-                  {viewItem['Image'] ? (
-                    <img
-                      src={viewItem['Image']}
-                      alt=""
-                      className="w-20 h-20 sm:w-24 sm:h-24 object-cover rounded-2xl border border-slate-200 bg-slate-50 group-hover:opacity-85 transition"
-                      onError={(e) => { e.target.style.display = 'none'; }}
-                    />
-                  ) : (
-                    <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
-                      <ImageIcon className="w-8 h-8" />
-                    </div>
-                  )}
-                  <div className="absolute inset-0 bg-black/30 rounded-2xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-                    <Maximize2 className="w-5 h-5 text-white" />
-                  </div>
-                </div>
-
-                <div className="min-w-0 flex-1 space-y-1">
-                  <h4 className="font-bold text-slate-800 text-sm sm:text-base leading-tight">{viewItem['Name']}</h4>
-                  <p className="text-xs font-semibold text-emerald-600">{viewItem['Hindi Name'] || '-'}</p>
-                  <p className="text-xs text-blue-600">{viewItem['Hinglish Name'] || '-'}</p>
-
-                  <div className="flex items-baseline gap-2 pt-1">
-                    <span className="text-base sm:text-lg font-bold text-emerald-600">₹{viewItem['Price']}</span>
-                    {viewItem['Original Price'] && (
-                      <span className="text-xs text-slate-400 line-through">₹{viewItem['Original Price']}</span>
-                    )}
-                    <span className="text-xs text-slate-500 font-medium">({viewItem['Quantity'] || 'N/A'})</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5 text-xs">
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block uppercase font-semibold">Sub-Category</span>
-                  <span className="text-slate-800 font-medium">{viewItem['Sub-Category'] || '-'}</span>
-                </div>
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block uppercase font-semibold">Category</span>
-                  <span className="text-slate-800 font-medium">{viewItem['Category'] || '-'}</span>
-                </div>
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block uppercase font-semibold">Indian Category</span>
-                  <span className="text-slate-800 font-medium">{viewItem['Indian Category'] || '-'}</span>
-                </div>
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block uppercase font-semibold">Indian Sub-Category</span>
-                  <span className="text-slate-800 font-medium">{viewItem['Indian Sub-Category'] || '-'}</span>
-                </div>
-              </div>
-
-              <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-xs flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <span className="text-[10px] text-slate-500 block uppercase font-semibold">Image Link</span>
-                  <span className="text-slate-600 text-[11px] truncate block" title={viewItem['Image']}>
-                    {viewItem['Image'] || 'No link provided'}
-                  </span>
-                </div>
-                {viewItem['Image'] && (
-                  <button
-                    onClick={() => window.open(viewItem['Image'], '_blank')}
-                    className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg text-xs flex items-center gap-1 shrink-0 transition"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    <span>Open</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="p-4 border-t border-slate-100 flex items-center justify-between bg-slate-50">
-              <button
-                onClick={() => setIsViewModalOpen(false)}
-                className="px-4 py-2 text-xs bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-100 transition"
-              >
-                Close
-              </button>
-
-              {isItemAdded(viewItem['Name']) ? (
-                <div className="flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl">
-                  <Check className="w-4 h-4" />
-                  <span>Added in My Excel</span>
-                </div>
-              ) : (
-                <button
-                  onClick={() => {
-                    handleAddToMyExcel(viewItem);
-                    setIsViewModalOpen(false);
-                  }}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-sm shadow-emerald-600/20"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add to My Excel</span>
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================== */}
-      {/* 🔍 FULLSCREEN IMAGE PREVIEW LIGHTBOX                      */}
-      {/* ======================================================== */}
+      {/* Lightbox Zoom */}
       {fullscreenImage && (
         <div 
           className="fixed inset-0 z-60 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer"
@@ -1202,16 +1261,14 @@ export default function App() {
           </button>
           <img
             src={fullscreenImage}
-            alt="Full size preview"
+            alt=""
             className="max-w-full max-h-[90vh] object-contain rounded-2xl shadow-2xl cursor-default"
             onClick={(e) => e.stopPropagation()}
           />
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* MODAL: ADD / EDIT PRODUCT (WHITE THEME)                   */}
-      {/* ======================================================== */}
+      {/* Modal: Add/Edit Product */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
           <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-xl overflow-hidden shadow-2xl">
@@ -1225,7 +1282,6 @@ export default function App() {
             </div>
 
             <form onSubmit={handleSaveModal} className="p-4 sm:p-6 space-y-3.5 max-h-[75vh] overflow-y-auto text-xs">
-              {/* IMAGE URL WITH DIRECT CLOUDINARY UPLOAD BUTTON */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="font-semibold text-slate-600 uppercase">Image URL / Device Upload</label>
@@ -1324,12 +1380,8 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ======================================================== */}
-              {/* 🔤 HINGLISH TO HINDI AUTO-CONVERTER                      */}
-              {/* Type in Hinglish -> Auto-generates Hindi Name            */}
-              {/* ======================================================== */}
+              {/* Hinglish to Hindi Auto Converter */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-200">
-                {/* 1. HINGLISH NAME (USER TYPES HERE) */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="font-semibold text-blue-700 uppercase">Hinglish Name</label>
@@ -1343,7 +1395,6 @@ export default function App() {
                       const val = e.target.value;
                       setFormData(prev => ({ ...prev, 'Hinglish Name': val }));
 
-                      // Auto-converts to Hindi in real-time
                       const hindiResult = await convertHinglishToHindi(val);
                       if (hindiResult) {
                         setFormData(prev => ({ ...prev, 'Hindi Name': hindiResult }));
@@ -1353,7 +1404,6 @@ export default function App() {
                   />
                 </div>
 
-                {/* 2. HINDI NAME (AUTO-CONVERTED & USER EDITABLE) */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="font-semibold text-emerald-700 uppercase">Hindi Name</label>
