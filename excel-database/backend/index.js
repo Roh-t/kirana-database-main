@@ -8,6 +8,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import compression from 'compression';
 
 dotenv.config();
 
@@ -23,6 +24,11 @@ cloudinary.config({
 
 const app = express();
 app.use(cors());
+// Gzip/deflate all responses. The /api/master/catalog route returns ~20MB of
+// JSON for 33,000+ products; without compression this can take 1-2 minutes to
+// download on a slow connection or a cold-started free-tier host, which made
+// the catalog appear to never load (0 items) in the frontend.
+app.use(compression());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
