@@ -16,28 +16,40 @@ cloudinary.config({
 });
 
 const app = express();
+
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB file limit
+
+// ------------------------------------
+// HEALTH CHECK ROUTE (REQUIRED BY RENDER)
+// ------------------------------------
+app.get('/', (req, res) => {
+  res.send('✅ Kirana Database API is up and running on Render!');
+});
 
 // ------------------------------------
 // MONGODB SCHEMA (11 EXACT COLUMNS)
 // ------------------------------------
-const productSchema = new mongoose.Schema({
-  Image: { type: String, default: '' },
-  Name: { type: String, required: true, index: true },
-  Price: { type: String, default: '' },
-  'Original Price': { type: String, default: '' },
-  Quantity: { type: String, default: '' },
-  'Sub-Category': { type: String, default: '' },
-  Category: { type: String, default: '' },
-  'Hindi Name': { type: String, default: '', index: true },
-  'Hinglish Name': { type: String, default: '', index: true },
-  'Indian Category': { type: String, default: '' },
-  'Indian Sub-Category': { type: String, default: '' }
-}, { timestamps: true });
+const productSchema = new mongoose.Schema(
+  {
+    Image: { type: String, default: '' },
+    Name: { type: String, required: true, index: true },
+    Price: { type: String, default: '' },
+    'Original Price': { type: String, default: '' },
+    Quantity: { type: String, default: '' },
+    'Sub-Category': { type: String, default: '' },
+    Category: { type: String, default: '' },
+    'Hindi Name': { type: String, default: '', index: true },
+    'Hinglish Name': { type: String, default: '', index: true },
+    'Indian Category': { type: String, default: '' },
+    'Indian Sub-Category': { type: String, default: '' },
+  },
+  { timestamps: true }
+);
 
 const MasterProduct = mongoose.model('MasterProduct', productSchema);
 
@@ -54,10 +66,10 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
     const b64 = Buffer.from(req.file.buffer).toString('base64');
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
 
-    // Upload to Cloudinary
+    // Upload directly to Cloudinary
     const result = await cloudinary.uploader.upload(dataURI, {
       folder: 'kirana_store',
-      resource_type: 'image'
+      resource_type: 'image',
     });
 
     res.json({ url: result.secure_url });
@@ -67,7 +79,11 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
   }
 });
 
-// Master Count
+// ------------------------------------
+// MASTER DATA ROUTES
+// ------------------------------------
+
+// 1. Get Master Count
 app.get('/api/master/count', async (req, res) => {
   try {
     const count = await MasterProduct.countDocuments();
@@ -77,7 +93,7 @@ app.get('/api/master/count', async (req, res) => {
   }
 });
 
-// Master Search
+// 2. Master Search (Supports Hindi, Hinglish & English)
 app.get('/api/master/search', async (req, res) => {
   try {
     const q = req.query.q ? req.query.q.trim() : '';
@@ -93,8 +109,8 @@ app.get('/api/master/search', async (req, res) => {
         { 'Hindi Name': regex },
         { 'Hinglish Name': regex },
         { 'Sub-Category': regex },
-        { 'Indian Sub-Category': regex }
-      ]
+        { 'Indian Sub-Category': regex },
+      ],
     }).limit(24);
 
     res.json(results);
@@ -103,7 +119,7 @@ app.get('/api/master/search', async (req, res) => {
   }
 });
 
-// Upload Master Excel File to MongoDB
+// 3. Upload Master Excel File to MongoDB
 app.post('/api/master/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -112,13 +128,19 @@ app.post('/api/master/upload', upload.single('file'), async (req, res) => {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rawData = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
-    if (rawData.length === 0) return res.status(400).json({ error: 'File is empty' });
+    if (rawData.length === 0) {
+      return res.status(400).json({ error: 'Uploaded file is empty' });
+    }
 
     const getVal = (row, possibleKeys) => {
       const rowKeys = Object.keys(row);
       for (const pKey of possibleKeys) {
-        const matched = rowKeys.find(k => k.trim().toLowerCase() === pKey.toLowerCase());
-        if (matched !== undefined && row[matched] !== undefined) return String(row[matched]).trim();
+        const matched = rowKeys.find(
+          (k) => k.trim().toLowerCase() === pKey.toLowerCase()
+        );
+        if (matched !== undefined && row[matched] !== undefined) {
+          return String(row[matched]).trim();
+        }
       }
       return '';
     };
@@ -127,21 +149,48 @@ app.post('/api/master/upload', upload.single('file'), async (req, res) => {
       Image: getVal(row, ['Image', 'imageUrl', 'image', 'img']),
       Name: getVal(row, ['Name', 'name', 'productName', 'Title']),
       Price: getVal(row, ['Price', 'lingPr', 'sellingPrice', 'price', 'sp']),
-      'Original Price': getVal(row, ['Original Price', 'OriginalPrice', 'mrp', 'MRP']),
-      Quantity: getVal(row, ['Quantity', 'quantity', 'qty', 'weight', 'size']),
-      'Sub-Category': getVal(row, ['Sub-Category', 'SubCategory', 'subcategory']),
+      'Original Price': getVal(row, [
+        'Original Price',
+        'OriginalPrice',
+        'mrp',
+        'MRP',
+      ]),
+      Quantity: getVal(row, [
+        'Quantity',
+        'quantity',
+        'qty',
+        'weight',
+        'size',
+      ]),
+      'Sub-Category': getVal(row, [
+        'Sub-Category',
+        'SubCategory',
+        'subcategory',
+      ]),
       Category: getVal(row, ['Category', 'category']),
       'Hindi Name': getVal(row, ['Hindi Name', 'HindiName', 'Hindi']),
-      'Hinglish Name': getVal(row, ['Hinglish Name', 'HinglishName', 'Hinglish']),
-      'Indian Category': getVal(row, ['Indian Category', 'IndianCategory']),
-      'Indian Sub-Category': getVal(row, ['Indian Sub-Category', 'IndianSubCategory'])
+      'Hinglish Name': getVal(row, [
+        'Hinglish Name',
+        'HinglishName',
+        'Hinglish',
+      ]),
+      'Indian Category': getVal(row, [
+        'Indian Category',
+        'IndianCategory',
+      ]),
+      'Indian Sub-Category': getVal(row, [
+        'Indian Sub-Category',
+        'IndianSubCategory',
+      ]),
     }));
 
+    // Clear old master and insert in chunks of 2,000 for high speed
     await MasterProduct.deleteMany({});
-    
+
     const CHUNK_SIZE = 2000;
     for (let i = 0; i < normalized.length; i += CHUNK_SIZE) {
-      await MasterProduct.insertMany(normalized.slice(i, i + CHUNK_SIZE), { ordered: false });
+      const chunk = normalized.slice(i, i + CHUNK_SIZE);
+      await MasterProduct.insertMany(chunk, { ordered: false });
     }
 
     const totalCount = await MasterProduct.countDocuments();
@@ -152,10 +201,25 @@ app.post('/api/master/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+// -----------------------------------------------------------
+// 🚀 SERVER START (LISTENS IMMEDIATELY - PREVENTS EARLY EXIT)
+// -----------------------------------------------------------
 const PORT = process.env.PORT || 5000;
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB Atlas');
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-  })
-  .catch(err => console.error('MongoDB Connection Failed:', err));
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server is listening on port ${PORT}`);
+});
+
+// MongoDB Connection
+if (!process.env.MONGODB_URI) {
+  console.error(
+    '⚠️ WARNING: MONGODB_URI is missing! Please add it in Render Environment settings.'
+  );
+} else {
+  mongoose
+    .connect(process.env.MONGODB_URI)
+    .then(() => console.log('✅ Connected to MongoDB Atlas successfully!'))
+    .catch((err) =>
+      console.error('❌ MongoDB Connection Failed:', err.message)
+    );
+}
