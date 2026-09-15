@@ -143,6 +143,8 @@ export default function App() {
   // DATA POOLS
   // ------------------------------------
   const [masterCatalog, setMasterCatalog] = useState([]);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
+
   const [myExcelData, setMyExcelData] = useState(() => {
     try {
       const saved = localStorage.getItem('app_curated_excel');
@@ -158,15 +160,75 @@ export default function App() {
     } catch (e) {}
   }, [myExcelData]);
 
-  // Load 33,000+ catalog pool on mount
+  // ========================================================
+  // 🚀 AUTO-LOAD CATALOG FROM PUBLIC/CATALOG.XLSX OR DB
+  // ========================================================
   useEffect(() => {
-    async function loadCatalog() {
-      const saved = await loadFromDB('master_catalog_pool') || await loadFromDB('excel_database_table');
+    async function initCatalog() {
+      // 1. Check if already cached in browser DB
+      let saved = await loadFromDB('master_catalog_pool') || await loadFromDB('excel_database_table');
       if (saved && Array.isArray(saved) && saved.length > 0) {
         setMasterCatalog(saved);
+        return;
+      }
+
+      // 2. If not in DB, automatically fetch /catalog.xlsx from public folder
+      try {
+        setIsLoadingCatalog(true);
+        const response = await fetch('/catalog.xlsx');
+        if (!response.ok) {
+          setIsLoadingCatalog(false);
+          return;
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const wb = XLSX.read(arrayBuffer, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rawData = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+        if (rawData.length > 0) {
+          const getVal = (row, possibleKeys) => {
+            const rowKeys = Object.keys(row);
+            for (const pKey of possibleKeys) {
+              const matched = rowKeys.find(
+                k => k.trim().toLowerCase() === pKey.toLowerCase()
+              );
+              if (matched !== undefined && row[matched] !== undefined) {
+                return String(row[matched]).trim();
+              }
+            }
+            return '';
+          };
+
+          const normalized = rawData.map((row) => {
+            const hindi = getVal(row, ['Hindi Name', 'HindiName', 'Hindi', 'regionalName']);
+            const hinglish = getVal(row, ['Hinglish Name', 'HinglishName', 'Hinglish']);
+
+            return {
+              'Image': getVal(row, ['Image', 'imageUrl', 'image', 'img']),
+              'Name': getVal(row, ['Name', 'name', 'productName', 'Title']),
+              'Price': getVal(row, ['Price', 'lingPr', 'sellingPrice', 'price', 'sp']),
+              'Original Price': getVal(row, ['Original Price', 'OriginalPrice', 'mrp', 'MRP']),
+              'Quantity': getVal(row, ['Quantity', 'quantity', 'qty', 'weight', 'size']),
+              'Sub-Category': getVal(row, ['Sub-Category', 'SubCategory', 'subcategory']),
+              'Category': getVal(row, ['Category', 'category']),
+              'Hindi Name': hindi,
+              'Hinglish Name': hinglish,
+              'Indian Category': getVal(row, ['Indian Category', 'IndianCategory']),
+              'Indian Sub-Category': getVal(row, ['Indian Sub-Category', 'IndianSubCategory'])
+            };
+          });
+
+          updateCatalog(normalized);
+        }
+      } catch (error) {
+        console.warn("Auto-load catalog error:", error);
+      } finally {
+        setIsLoadingCatalog(false);
       }
     }
-    loadCatalog();
+
+    initCatalog();
   }, []);
 
   const updateCatalog = (newData) => {
@@ -295,7 +357,7 @@ export default function App() {
   };
 
   // ------------------------------------
-  // EXCEL IMPORT
+  // MANUAL EXCEL IMPORT (OPTIONAL)
   // ------------------------------------
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -458,7 +520,7 @@ export default function App() {
   }, [myExcelData, currentPage]);
 
   // ========================================================
-  // ⚪ LOGIN SCREEN (CLEAN WHITE THEME)
+  // ⚪ LOGIN SCREEN (WHITE THEME)
   // ========================================================
   if (!isAuthenticated) {
     return (
@@ -469,7 +531,7 @@ export default function App() {
               <FileSpreadsheet className="w-8 h-8" />
             </div>
             <h2 className="text-xl font-bold text-slate-800 tracking-tight">Excel Database Creator</h2>
-            <p className="text-slate-500 text-xs mt-1">Light & Crisp UI • Cloudinary Ready</p>
+            <p className="text-slate-500 text-xs mt-1">Light & Crisp UI • Auto-Loaded Catalog</p>
           </div>
 
           {authError && (
@@ -528,7 +590,7 @@ export default function App() {
   }
 
   // ========================================================
-  // ⚪ MAIN WORKSPACE (CLEAN WHITE THEME)
+  // ⚪ MAIN WORKSPACE (WHITE THEME)
   // ========================================================
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans pb-24 md:pb-8">
@@ -542,7 +604,13 @@ export default function App() {
             <div>
               <h1 className="font-bold text-sm sm:text-base text-slate-800 leading-none">Excel Database Studio</h1>
               <p className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">
-                Suggestion Pool: <strong className="text-emerald-600">{masterCatalog.length.toLocaleString()} items</strong>
+                {isLoadingCatalog ? (
+                  <span className="text-blue-600 font-medium animate-pulse">
+                    ⏳ Auto-loading 33,000+ catalog...
+                  </span>
+                ) : (
+                  <>Catalog: <strong className="text-emerald-600">{masterCatalog.length.toLocaleString()} items ready</strong></>
+                )}
               </p>
             </div>
           </div>
@@ -651,7 +719,6 @@ export default function App() {
                       className="bg-slate-50/70 border border-slate-200 rounded-xl p-3 flex flex-col justify-between hover:border-slate-300 hover:bg-white transition gap-2 shadow-xs"
                     >
                       <div className="flex items-start gap-2.5">
-                        {/* Clickable Image Thumbnail */}
                         <div 
                           className="relative cursor-pointer group shrink-0" 
                           onClick={() => item['Image'] && setFullscreenImage(item['Image'])}
@@ -1327,7 +1394,7 @@ export default function App() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-slate-600 uppercase mb-1">Indian Category</label>
+                  <label className="block font-semibold text-neutral-400 uppercase mb-1">Indian Category</label>
                   <input
                     type="text"
                     placeholder="Other"
@@ -1337,7 +1404,7 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold text-slate-600 uppercase mb-1">Indian Sub-Category</label>
+                  <label className="block font-semibold text-neutral-400 uppercase mb-1">Indian Sub-Category</label>
                   <input
                     type="text"
                     placeholder="अन्य"
