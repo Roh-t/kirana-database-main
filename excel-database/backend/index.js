@@ -192,22 +192,37 @@ app.get('/api/master/catalog', async (req, res) => {
 
 app.get('/api/master/search', async (req, res) => {
   try {
-    const q = req.query.q ? req.query.q.trim() : '';
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     if (!q) {
-      const sample = await MasterProduct.find().limit(24);
+      const sample = await MasterProduct.find().sort({ Name: 1 }).limit(24).lean();
       return res.json(sample);
     }
 
-    const regex = new RegExp(q, 'i');
+    const tokens = q
+      .normalize('NFKC')
+      .toLowerCase()
+      .split(/\s+/)
+      .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .filter(Boolean);
+    const searchableFields = [
+      'Name',
+      'Hindi Name',
+      'Hinglish Name',
+      'Sub-Category',
+      'Category',
+      'Indian Category',
+      'Indian Sub-Category',
+      'Quantity',
+    ];
+
+    // Every query word must match at least one searchable field.
     const results = await MasterProduct.find({
-      $or: [
-        { Name: regex },
-        { 'Hindi Name': regex },
-        { 'Hinglish Name': regex },
-        { 'Sub-Category': regex },
-        { 'Indian Sub-Category': regex },
-      ],
-    }).limit(24);
+      $and: tokens.map((token) => ({
+        $or: searchableFields.map((field) => ({
+          [field]: { $regex: token, $options: 'i' },
+        })),
+      })),
+    }).sort({ Name: 1 }).limit(24).lean();
 
     res.json(results);
   } catch (err) {

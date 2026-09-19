@@ -90,6 +90,41 @@ function normalizeCatalogRows(rawData) {
   }));
 }
 
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getSearchTokens(value) {
+  return normalizeSearchText(value).split(' ').filter(Boolean);
+}
+
+function scoreSearchField(field, token) {
+  if (!field) return 0;
+  if (field === token) return 1000;
+  if (field.startsWith(`${token} `)) return 700;
+  if (field.startsWith(token)) return 550;
+  if (field.includes(` ${token} `)) return 450;
+  if (field.includes(token)) return 300;
+  return 0;
+}
+
+function scoreSearchResult(fields, queryTokens) {
+  let score = 0;
+  for (const token of queryTokens) {
+    const tokenScore = Math.max(...fields.map(field => scoreSearchField(field, token)));
+    if (tokenScore === 0) return 0;
+    score += tokenScore;
+  }
+  return score;
+}
+
 // IndexedDB Helper for high-capacity 33,000+ dataset storage
 const DB_NAME = 'CatalogStoreDB';
 const STORE_NAME = 'MasterCatalogStore';
@@ -466,29 +501,37 @@ export default function App() {
     e.target.value = null;
   };
 
-  // Search across 33,000 items
+  // Search across the catalog and rank exact, word-start, and substring matches.
   const searchResults = useMemo(() => {
-    if (!searchQuery.trim()) return [];
+    const queryTokens = getSearchTokens(searchQuery);
+    if (queryTokens.length === 0) return [];
 
-    const queryTokens = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const matches = [];
+    return masterCatalog
+      .map((row, index) => {
+        const fields = [
+          row['Name'],
+          row['Hindi Name'],
+          row['Hinglish Name'],
+          row['Sub-Category'],
+          row['Category'],
+          row['Indian Category'],
+          row['Indian Sub-Category'],
+          row['Quantity']
+        ].map(normalizeSearchText);
 
-    for (let i = 0; i < masterCatalog.length; i++) {
-      const row = masterCatalog[i];
-      const hindi = (row['Hindi Name'] || '').toLowerCase();
-      const hinglish = (row['Hinglish Name'] || '').toLowerCase();
-      const name = (row['Name'] || '').toLowerCase();
-      const subCat = (row['Sub-Category'] || '').toLowerCase();
-      const indSubCat = (row['Indian Sub-Category'] || '').toLowerCase();
-
-      const combined = `${name} ${hindi} ${hinglish} ${subCat} ${indSubCat}`;
-
-      if (queryTokens.every((token) => combined.includes(token))) {
-        matches.push(row);
-        if (matches.length >= 24) break;
-      }
-    }
-    return matches;
+        return {
+          row,
+          index,
+          score: scoreSearchResult(fields, queryTokens),
+          name: normalizeSearchText(row['Name'])
+        };
+      })
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score
+        || a.name.localeCompare(b.name)
+        || a.index - b.index)
+      .slice(0, 24)
+      .map(item => item.row);
   }, [masterCatalog, searchQuery]);
 
   const isItemAdded = (itemName) => {
@@ -571,12 +614,12 @@ export default function App() {
   ), [myExcelData, selectedCategory]);
 
   const filteredMyExcelData = useMemo(() => {
-    const queryTokens = selectedSearchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const queryTokens = getSearchTokens(selectedSearchQuery);
 
     return myExcelData.filter((row) => {
       const category = (row['Indian Category'] || row['Category'] || '').trim();
       const subCategory = (row['Indian Sub-Category'] || row['Sub-Category'] || '').trim();
-      const searchableText = [
+      const searchableText = normalizeSearchText([
         row['Name'],
         row['Hindi Name'],
         row['Hinglish Name'],
@@ -584,7 +627,7 @@ export default function App() {
         row['Sub-Category'],
         row['Indian Category'],
         row['Indian Sub-Category']
-      ].join(' ').toLowerCase();
+      ].join(' '));
 
       return (!selectedCategory || category === selectedCategory)
         && (!selectedSubCategory || subCategory === selectedSubCategory)
@@ -960,7 +1003,9 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
                 <h3 className="font-bold text-xs sm:text-sm text-slate-800">
-                  Found {searchResults.length} matches:
+                  {searchResults.length === 24
+                    ? 'Showing the top 24 matches:'
+                    : `Found ${searchResults.length} matches:`}
                 </h3>
               </div>
               <span className="text-[11px] text-slate-500 hidden sm:inline">
