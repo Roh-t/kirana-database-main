@@ -105,6 +105,63 @@ function getSearchTokens(value) {
   return normalizeSearchText(value).split(' ').filter(Boolean);
 }
 
+function editDistance(left, right, maxDistance) {
+  if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+
+  let beforePrevious = null;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  let current = new Array(right.length + 1);
+
+  for (let row = 1; row <= left.length; row++) {
+    current[0] = row;
+    let rowMinimum = current[0];
+
+    for (let column = 1; column <= right.length; column++) {
+      const substitutionCost = left[row - 1] === right[column - 1] ? 0 : 1;
+      current[column] = Math.min(
+        previous[column] + 1,
+        current[column - 1] + 1,
+        previous[column - 1] + substitutionCost
+      );
+
+      if (
+        row > 1
+        && column > 1
+        && beforePrevious
+        && left[row - 1] === right[column - 2]
+        && left[row - 2] === right[column - 1]
+      ) {
+        current[column] = Math.min(current[column], beforePrevious[column - 2] + 1);
+      }
+      rowMinimum = Math.min(rowMinimum, current[column]);
+    }
+
+    if (rowMinimum > maxDistance) return maxDistance + 1;
+    beforePrevious = previous;
+    [previous, current] = [current, previous];
+  }
+
+  return previous[right.length];
+}
+
+function fuzzyTokenScore(field, token) {
+  if (token.length < 3) return 0;
+
+  const allowedDistance = token.length >= 7 ? 2 : 1;
+  const fieldTokens = getSearchTokens(field);
+  let bestScore = 0;
+
+  for (const fieldToken of fieldTokens) {
+    if (Math.abs(fieldToken.length - token.length) > allowedDistance) continue;
+    const distance = editDistance(token, fieldToken, allowedDistance);
+    if (distance <= allowedDistance) {
+      bestScore = Math.max(bestScore, 180 - distance * 45);
+    }
+  }
+
+  return bestScore;
+}
+
 function scoreSearchField(field, token) {
   if (!field) return 0;
   if (field === token) return 1000;
@@ -112,7 +169,8 @@ function scoreSearchField(field, token) {
   if (field.startsWith(token)) return 550;
   if (field.includes(` ${token} `)) return 450;
   if (field.includes(token)) return 300;
-  return 0;
+  if (token.length >= 4 && field.replaceAll(' ', '').includes(token)) return 260;
+  return fuzzyTokenScore(field, token);
 }
 
 function scoreSearchResult(fields, queryTokens) {
